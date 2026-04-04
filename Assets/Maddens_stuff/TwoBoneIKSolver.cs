@@ -1,75 +1,89 @@
-using UnityEngine;
+ï»¿using UnityEngine;
 
-
-/// Two-bone IK solver with a 1-DOF shoulder (pitch only) and 3-DOF elbow.
-/// When the target moves, the arm smoothly animates to the new pose over solveInterval seconds.
-/// If the target hasn't moved, the arm stays still
-/// 
+/// <summary>
+/// Two-bone IK solver for a robot arm with three servos:
+///
+///   Servo 1 - Shoulder Pitch:  rotates around world X axis, swings upper arm forward/back.
+///                               The upper arm is locked to the XY plane (no yaw/turntable).
+///
+///   Servo 2 - Upper Arm Roll:  rotates the upper arm around its own length axis.
+///                               This doesn't move the upper arm, but it determines which
+///                               direction the elbow hinge faces (forearm swings in/out).
+///
+///   Servo 3 - Elbow Pitch:     bends the forearm in the plane defined by the roll.
+///                               Clamped to +/-90 deg from straight. Cannot fold through the upper arm.
+///
+/// Rest pose: arm hangs straight down (-Y), roll = 0, elbow straight.
+///
 /// Setup:
-///   - Attach this script to an empty GameObject (the "shoulder pivot").
-///   - Create two cubes (UpperArm, Forearm) and an elbow pivot — NOT parented to shoulder.
-///   - Create a sphere as the drag target.
-///   - Assign all references in the Inspector.
-
+///   - Attach to an empty GameObject at the shoulder position.
+///   - Create separate GameObjects for ElbowPivot, UpperArmCube, ForearmCube, target sphere.
+///   - Do NOT parent visuals/elbow under the shoulder -- the script manages all transforms.
+/// </summary>
 public class TwoBoneIKSolver : MonoBehaviour
 {
     [Header("References")]
-    [Tooltip("The transform that acts as the elbow pivot point")] //where the elbow pivot will end up being, this script puts it automatically
     public Transform elbowPivot;
-
-    [Tooltip("The upper arm visual (cube)")] //the cube that is for the visual and detection of the program
     public Transform upperArmVisual;
-
-    [Tooltip("The forearm visual (cube)")] //this will be the forearm, same as above, it is for visual and collision detection
     public Transform forearmVisual;
-
-    [Tooltip("The draggable target sphere")] //this is the IK position point, which will end up being controlled by VR
     public Transform target;
 
-    [Header("Arm Dimensions")] //This is where we will create the dimensions for the arms
+    [Header("Arm Dimensions")]
     public float upperArmLength = 2f;
     public float forearmLength = 1.5f;
 
-    [Header("Visual Settings")] //this is the thickness of the arms
+    [Header("Visual Settings")]
     public float armThickness = 0.3f;
 
-    [Header("Timing")] //the interval over which the arm will move to the new position
-    [Tooltip("Duration in seconds for the arm to animate to a new pose")]
+    [Header("Timing")]
+    [Tooltip("Seconds to animate to a new pose")]
     public float solveInterval = 1f;
 
-    [Header("Dead Zone")] //to keep the arm from bouncing, once it is close enough to the target, it will rest and be happy
-    [Tooltip("Minimum distance the target must move before a new solve is triggered")]
+    [Header("Dead Zone")]
+    [Tooltip("Target must move this far to trigger a new solve")]
     public float moveThreshold = 0.05f;
 
-    // --- Interpolation state ---
-    private Quaternion shoulderRotStart;
-    private Quaternion shoulderRotGoal;
-    private Quaternion elbowRotStart;
-    private Quaternion elbowRotGoal;
+    [Header("Elbow Limits")]
+    [Tooltip("Max bend angle forward from straight (degrees)")]
+    public float elbowMaxForward = 90f;
+    [Tooltip("Max bend angle backward from straight (degrees)")]
+    public float elbowMaxBackward = 90f;
 
-    private float lerpT = 1f; // 0 = at start pose, 1 = at goal pose
+    // --- Interpolation state ---
+    private float shoulderPitchStart, shoulderPitchGoal;
+    private float upperArmRollStart, upperArmRollGoal;
+    private float elbowBendStart, elbowBendGoal;
+
+    private float lerpT = 1f;
     private Vector3 lastSolvedTargetPos;
     private bool hasInitialized = false;
 
+    // Current applied values
+    private float currentPitch, currentRoll, currentElbowBend;
+
     void Start()
     {
-        // Scale visuals
         if (upperArmVisual != null)
             upperArmVisual.localScale = new Vector3(armThickness, armThickness, upperArmLength);
         if (forearmVisual != null)
             forearmVisual.localScale = new Vector3(armThickness, armThickness, forearmLength);
 
-        // Solve immediately to set initial pose
         if (target != null)
         {
-            SolveIKPose(target.position, out shoulderRotGoal, out elbowRotGoal);
-            shoulderRotStart = shoulderRotGoal;
-            elbowRotStart = elbowRotGoal;
+            SolveIK(target.position, out shoulderPitchGoal, out upperArmRollGoal, out elbowBendGoal);
+            shoulderPitchStart = shoulderPitchGoal;
+            upperArmRollStart = upperArmRollGoal;
+            elbowBendStart = elbowBendGoal;
+
+            currentPitch = shoulderPitchGoal;
+            currentRoll = upperArmRollGoal;
+            currentElbowBend = elbowBendGoal;
+
             lastSolvedTargetPos = target.position;
             lerpT = 1f;
             hasInitialized = true;
 
-            ApplyPose(shoulderRotGoal, elbowRotGoal);
+            ApplyPose(currentPitch, currentRoll, currentElbowBend);
         }
     }
 
@@ -81,141 +95,264 @@ public class TwoBoneIKSolver : MonoBehaviour
         {
             float distMoved = Vector3.Distance(target.position, lastSolvedTargetPos);
 
-            // Only start a new solve if the target moved enough AND the last animation finished
             if (distMoved > moveThreshold && lerpT >= 1f)
             {
                 BeginNewSolve();
             }
         }
 
-        // Animate toward the goal
         if (lerpT < 1f)
         {
             lerpT += Time.deltaTime / solveInterval;
             lerpT = Mathf.Clamp01(lerpT);
 
-            // SmoothStep for nice ease-in / ease-out
             float t = Mathf.SmoothStep(0f, 1f, lerpT);
 
-            Quaternion shoulderRot = Quaternion.Slerp(shoulderRotStart, shoulderRotGoal, t);
-            Quaternion elbowRot = Quaternion.Slerp(elbowRotStart, elbowRotGoal, t);
+            currentPitch = Mathf.Lerp(shoulderPitchStart, shoulderPitchGoal, t);
+            currentRoll = Mathf.Lerp(upperArmRollStart, upperArmRollGoal, t);
+            currentElbowBend = Mathf.Lerp(elbowBendStart, elbowBendGoal, t);
 
-            ApplyPose(shoulderRot, elbowRot);
+            ApplyPose(currentPitch, currentRoll, currentElbowBend);
         }
     }
 
-
-    /// Begins a new interpolation from the current pose to a freshly solved pose.
-
     void BeginNewSolve()
     {
-        // Snapshot current pose as the start
-        shoulderRotStart = transform.localRotation;
-        elbowRotStart = elbowPivot.rotation;
+        shoulderPitchStart = currentPitch;
+        upperArmRollStart = currentRoll;
+        elbowBendStart = currentElbowBend;
 
-        // Solve for the new goal
-        SolveIKPose(target.position, out shoulderRotGoal, out elbowRotGoal);
+        SolveIK(target.position, out shoulderPitchGoal, out upperArmRollGoal, out elbowBendGoal);
+
+        // Unwrap angles so lerp takes the shortest path.
+        // If the difference is more than 180 deg, adjust the goal by +/-360.
+        shoulderPitchGoal = UnwrapAngle(shoulderPitchStart, shoulderPitchGoal);
+        upperArmRollGoal = UnwrapAngle(upperArmRollStart, upperArmRollGoal);
+        elbowBendGoal = UnwrapAngle(elbowBendStart, elbowBendGoal);
 
         lastSolvedTargetPos = target.position;
         lerpT = 0f;
     }
 
-
-    /// Pure math — computes shoulder and elbow rotations for a given target
-    /// without applying them. Keeps the solve separate from the animation.
-
-    void SolveIKPose(Vector3 targetPos, out Quaternion shoulderRot, out Quaternion elbowRot)
+    /// <summary>
+    /// Adjusts 'goal' so that the difference from 'start' is within -180 to +180 degrees.
+    /// This ensures Mathf.Lerp takes the shortest rotational path.
+    /// </summary>
+    float UnwrapAngle(float start, float goal)
     {
-        // Temporarily reset shoulder to identity so we get a clean local-space target
-        Quaternion originalRot = transform.localRotation;
-        transform.localRotation = Quaternion.identity;
+        float diff = goal - start;
+        while (diff > 180f) diff -= 360f;
+        while (diff < -180f) diff += 360f;
+        return start + diff;
+    }
 
-        Vector3 localTarget = transform.InverseTransformPoint(targetPos);
+    /// <summary>
+    /// Solves for the three servo angles given a target position.
+    ///
+    /// STEP 1 - SHOULDER PITCH + ELBOW BEND (2D triangle solve):
+    ///   The shoulder pitches around X, so the upper arm swings in the YZ plane
+    ///   (well, really the "down/forward" plane since it rests at -Y).
+    ///   We compute the distance from the shoulder to the target, form a triangle
+    ///   with the two arm segments, and use law of cosines to find the shoulder
+    ///   pitch and the elbow bend angle. This gets the wrist to the correct
+    ///   distance from the shoulder -- but only in the pitch plane.
+    ///
+    /// STEP 2 - UPPER ARM ROLL:
+    ///   The pitch solve works in a 2D plane, but the target might be off to the
+    ///   side (in X). The roll twists the upper arm so the elbow hinge faces the
+    ///   right direction, swinging the forearm toward the target's X position.
+    ///   
+    ///   To find the roll angle: once pitch places the elbow in world space, we
+    ///   look at where the target is relative to the elbow. The roll needs to
+    ///   rotate the forearm's bend plane so it contains the target. This is
+    ///   computed by finding the angle of the target around the upper arm axis.
+    /// </summary>
+    void SolveIK(Vector3 targetPos, out float shoulderPitch, out float upperArmRoll, out float elbowBend)
+    {
+        Vector3 shoulderPos = transform.position;
+        Vector3 toTarget = targetPos - shoulderPos;
 
-        // Distance in the YZ plane (shoulder pitches around X axis)
-        float distYZ = Mathf.Sqrt(localTarget.y * localTarget.y + localTarget.z * localTarget.z);
+        // ============================
+        // STEP 1: Shoulder Pitch + Elbow Bend
+        // ============================
+        // The pitch swings the arm in a plane containing the arm axis and the Y axis.
+        // We need the distance from shoulder to target to solve the triangle.
+        float d = toTarget.magnitude;
 
         float totalReach = upperArmLength + forearmLength;
         float minReach = Mathf.Abs(upperArmLength - forearmLength);
-        float d = Mathf.Clamp(distYZ, minReach + 0.001f, totalReach - 0.001f);
+        d = Mathf.Clamp(d, minReach + 0.001f, totalReach - 0.001f);
 
-        // Law of cosines — shoulder offset angle
-        float cosShoulderOffset = (upperArmLength * upperArmLength + d * d - forearmLength * forearmLength)
-                                  / (2f * upperArmLength * d);
-        cosShoulderOffset = Mathf.Clamp(cosShoulderOffset, -1f, 1f);
-        float shoulderOffset = Mathf.Acos(cosShoulderOffset) * Mathf.Rad2Deg;
+        // Law of cosines: shoulder angle (angle between upper arm and line to target)
+        float cosShoulderAngle = (upperArmLength * upperArmLength + d * d - forearmLength * forearmLength)
+                                 / (2f * upperArmLength * d);
+        cosShoulderAngle = Mathf.Clamp(cosShoulderAngle, -1f, 1f);
+        float shoulderTriAngle = Mathf.Acos(cosShoulderAngle) * Mathf.Rad2Deg;
 
-        // Angle from forward (local Z) to target in YZ plane
-        float angleToTarget = Mathf.Atan2(localTarget.y, localTarget.z) * Mathf.Rad2Deg;
+        // Angle from straight down (-Y) to the target, measured in the pitch plane.
+        // We use the full 3D distance projected: vertical = -toTarget.y, horizontal = sqrt(x^2 + z^2)
+        // But since pitch only operates in the vertical plane, horizontal distance is
+        // the XZ distance, and vertical is Y.
+        float horizontalDist = Mathf.Sqrt(toTarget.x * toTarget.x + toTarget.z * toTarget.z);
+        float angleToTarget = Mathf.Atan2(horizontalDist, -toTarget.y) * Mathf.Rad2Deg;
 
-        // Always use elbow-down solution (subtract offset) to prevent flipping
-        float shoulderPitch = angleToTarget - shoulderOffset;
-        shoulderRot = Quaternion.AngleAxis(-shoulderPitch, Vector3.right);
+        // Pitch = angle to target - triangle offset (elbow-forward solution)
+        shoulderPitch = angleToTarget - shoulderTriAngle;
 
-        // Temporarily apply to find where the elbow ends up in world space
-        transform.localRotation = shoulderRot;
-        Vector3 elbowPos = transform.position + transform.forward * upperArmLength;
+        // Law of cosines: elbow angle (interior angle at elbow vertex)
+        float cosElbowAngle = (upperArmLength * upperArmLength + forearmLength * forearmLength - d * d)
+                              / (2f * upperArmLength * forearmLength);
+        cosElbowAngle = Mathf.Clamp(cosElbowAngle, -1f, 1f);
+        float rawElbowAngle = Mathf.Acos(cosElbowAngle) * Mathf.Rad2Deg;
 
-        // Elbow aims at target (full 3-DOF)
+        // Convert: 180 deg interior = straight (0 deg bend), less interior = more bend
+        elbowBend = 180f - rawElbowAngle;
+
+        // Self-collision clamp
+        elbowBend = Mathf.Clamp(elbowBend, -elbowMaxBackward, elbowMaxForward);
+
+        // ============================
+        // STEP 2: Upper Arm Roll
+        // ============================
+        // The pitch puts the arm in the correct vertical plane, but if the target
+        // is off to the side (in X), the roll needs to twist the upper arm so the
+        // elbow's bend plane contains the target.
+        //
+        // After pitch is applied, the upper arm direction is known. We find where
+        // the elbow is, then compute the angle from the elbow to the target
+        // around the upper arm axis.
+        //
+        // We work this out by temporarily computing the elbow position after pitch,
+        // then projecting the target onto the plane perpendicular to the upper arm
+        // at the elbow, and finding the angle.
+
+        // Upper arm direction after pitch (pitch rotates around X, arm rests at -Y)
+        Quaternion pitchRot = Quaternion.AngleAxis(-shoulderPitch, Vector3.right);
+        Vector3 upperArmDir = pitchRot * Vector3.down; // rotated -Y
+
+        Vector3 elbowPos = shoulderPos + upperArmDir * upperArmLength;
         Vector3 elbowToTarget = targetPos - elbowPos;
-        if (elbowToTarget.sqrMagnitude > 0.0001f)
+
+        // Project elbowToTarget onto the plane perpendicular to upperArmDir
+        Vector3 projected = elbowToTarget - Vector3.Dot(elbowToTarget, upperArmDir) * upperArmDir;
+
+        if (projected.sqrMagnitude < 0.0001f)
         {
-            elbowRot = Quaternion.LookRotation(elbowToTarget.normalized);
+            // Target is directly along the upper arm axis -- roll doesn't matter
+            upperArmRoll = 0f;
         }
         else
         {
-            elbowRot = transform.rotation;
-        }
+            // We need a reference direction in the perpendicular plane to measure the angle from.
+            // The "default" bend direction (roll=0) after pitch is the direction the forearm
+            // would go if it just continued bending in the pitch plane.
+            // After pitching around X, the bend plane normal is the X axis,
+            // and the default bend direction is perpendicular to upperArmDir in the YZ plane.
+            Vector3 defaultBendDir = Vector3.Cross(Vector3.right, upperArmDir).normalized;
 
-        // Restore rotation — the caller will apply the interpolated version
-        transform.localRotation = originalRot;
+            // If this is zero (arm pointing along X, which shouldn't happen with X-axis pitch),
+            // fall back to forward
+            if (defaultBendDir.sqrMagnitude < 0.0001f)
+                defaultBendDir = Vector3.forward;
+
+            Vector3 perpRef = Vector3.Cross(upperArmDir, defaultBendDir).normalized;
+
+            // Angle of the projected target direction relative to the default bend direction,
+            // measured around the upper arm axis
+            float projOnDefault = Vector3.Dot(projected.normalized, defaultBendDir);
+            float projOnPerp = Vector3.Dot(projected.normalized, perpRef);
+
+            upperArmRoll = Mathf.Atan2(projOnPerp, projOnDefault) * Mathf.Rad2Deg;
+        }
     }
 
-
-    /// Applies shoulder + elbow rotations and positions all visuals.
-
-    void ApplyPose(Quaternion shoulderRot, Quaternion elbowRot)
+    /// <summary>
+    /// Applies the three servo angles and positions all visuals.
+    ///
+    /// Build order:
+    ///   1. Pitch rotates shoulder around world X axis - upper arm swings forward/back
+    ///   2. Roll rotates upper arm around its own axis - changes elbow bend plane
+    ///   3. Elbow bends forearm in the plane defined by pitch + roll
+    /// </summary>
+    void ApplyPose(float pitch, float roll, float elbowBendAngle)
     {
+        // --- Shoulder Pitch ---
+        // Rotate around world X. Negative so positive pitch swings arm forward.
+        Quaternion pitchRot = Quaternion.AngleAxis(-pitch, Vector3.right);
+
+        // Upper arm direction: -Y (down) rotated by pitch only
+        // (roll doesn't change the arm direction, just twists around it)
+        Vector3 upperArmDir = pitchRot * Vector3.down;
+        Vector3 elbowPos = transform.position + upperArmDir * upperArmLength;
+        elbowPivot.position = elbowPos;
+
+        // --- Upper Arm Roll ---
+        // Roll rotates the entire arm assembly around the upper arm's axis.
+        // This determines which plane the elbow hinge bends in.
+        Quaternion rollRot = Quaternion.AngleAxis(roll, upperArmDir);
+
+        // Combined shoulder rotation: pitch then roll.
+        // Both upper arm and forearm live in the plane this establishes.
+        Quaternion shoulderRot = rollRot * pitchRot;
         transform.localRotation = shoulderRot;
-        elbowPivot.rotation = elbowRot;
 
-        // Position elbow pivot at end of upper arm
-        elbowPivot.position = transform.position + transform.forward * upperArmLength;
+        // --- Elbow Bend (hinge) ---
+        // The bend axis is the shoulder's local X axis after pitch + roll.
+        // This is the hinge axis -- perpendicular to the arm plane.
+        Vector3 bendAxis = transform.right;
 
-        // Upper arm visual
+        // At bend=0 deg, forearm continues straight along upper arm.
+        // Positive bend rotates the forearm within the arm plane.
+        Quaternion elbowRot = Quaternion.AngleAxis(elbowBendAngle, bendAxis);
+        Vector3 forearmDir = elbowRot * upperArmDir;
+
+        elbowPivot.rotation = Quaternion.LookRotation(forearmDir, transform.forward);
+
+        // --- Visuals ---
+        // Both pieces share the same plane (defined by pitch + roll).
+        // The only difference is the forearm is additionally rotated by the hinge.
         if (upperArmVisual != null)
         {
-            upperArmVisual.position = transform.position + transform.forward * (upperArmLength / 2f);
-            upperArmVisual.rotation = transform.rotation;
+            upperArmVisual.position = transform.position + upperArmDir * (upperArmLength / 2f);
+            upperArmVisual.rotation = Quaternion.LookRotation(upperArmDir, transform.forward);
             upperArmVisual.localScale = new Vector3(armThickness, armThickness, upperArmLength);
         }
 
-        // Forearm visual
         if (forearmVisual != null)
         {
-            forearmVisual.position = elbowPivot.position + elbowPivot.forward * (forearmLength / 2f);
-            forearmVisual.rotation = elbowPivot.rotation;
+            forearmVisual.position = elbowPos + forearmDir * (forearmLength / 2f);
+            forearmVisual.rotation = Quaternion.LookRotation(forearmDir, transform.forward);
             forearmVisual.localScale = new Vector3(armThickness, armThickness, forearmLength);
         }
     }
 
     void OnDrawGizmos()
     {
-        if (elbowPivot == null) return;
+        if (elbowPivot != null)
+        {
+            Gizmos.color = Color.yellow;
+            Gizmos.DrawLine(transform.position, elbowPivot.position);
+        }
 
-        Gizmos.color = Color.yellow;
-        Gizmos.DrawLine(transform.position, elbowPivot.position);
-
-        if (target != null)
+        if (target != null && forearmVisual != null)
         {
             Gizmos.color = Color.cyan;
-            Gizmos.DrawLine(elbowPivot.position, target.position);
+            Vector3 forearmEnd = forearmVisual.position + forearmVisual.forward * (forearmLength / 2f);
+            Gizmos.DrawLine(elbowPivot.position, forearmEnd);
 
             Gizmos.color = Color.red;
             Gizmos.DrawWireSphere(target.position, 0.15f);
         }
 
+        // Draw pitch axis (world X)
         Gizmos.color = Color.green;
-        Gizmos.DrawRay(transform.position, transform.right * 0.5f);
+        Gizmos.DrawRay(transform.position, Vector3.right * 0.5f);
+
+        // Draw upper arm roll axis
+        if (Application.isPlaying)
+        {
+            Gizmos.color = Color.magenta;
+            Gizmos.DrawRay(transform.position, -(transform.up) * 0.5f);
+        }
     }
 }
