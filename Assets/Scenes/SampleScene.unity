@@ -899,7 +899,6 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 1013956509}
-  - component: {fileID: 1013956508}
   m_Layer: 0
   m_Name: LeftShoulderPivot
   m_TagString: Untagged
@@ -907,29 +906,6 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &1013956508
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1013956507}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 3c4edd03ba851534ca2f0c9d5febfe3d, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::TwoBoneIKSolver
-  elbowPivot: {fileID: 756122862}
-  upperArmVisual: {fileID: 291109034}
-  forearmVisual: {fileID: 1677549430}
-  target: {fileID: 605968627}
-  upperArmLength: 2
-  forearmLength: 1.5
-  armThickness: 0.3
-  solveInterval: 1
-  moveThreshold: 0.05
-  elbowMaxForward: 90
-  elbowMaxBackward: 90
 --- !u!4 &1013956509
 Transform:
   m_ObjectHideFlags: 0
@@ -974,17 +950,24 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 3c4edd03ba851534ca2f0c9d5febfe3d, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::TwoBoneIKSolver
-  elbowPivot: {fileID: 1530130419}
-  upperArmVisual: {fileID: 1246825608}
-  forearmVisual: {fileID: 448014344}
-  target: {fileID: 2123304704}
+  rightElbowPivot: {fileID: 1530130419}
+  rightUpperArmVisual: {fileID: 1246825608}
+  rightForearmVisual: {fileID: 448014344}
+  rightTarget: {fileID: 2123304704}
+  leftShoulderPivot: {fileID: 1013956509}
+  leftElbowPivot: {fileID: 756122862}
+  leftUpperArmVisual: {fileID: 291109034}
+  leftForearmVisual: {fileID: 1677549430}
+  leftTarget: {fileID: 605968627}
   upperArmLength: 2
   forearmLength: 1.5
   armThickness: 0.3
-  solveInterval: 1
+  servoMoveTime: 0.5
+  servoSpeed: 50
   moveThreshold: 0.05
   elbowMaxForward: 90
   elbowMaxBackward: 90
+  csvOutputFolder: ServoCommands
 --- !u!4 &1168465727
 Transform:
   m_ObjectHideFlags: 0
