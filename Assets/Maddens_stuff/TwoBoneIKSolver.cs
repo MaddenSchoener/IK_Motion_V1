@@ -59,6 +59,13 @@ public class TwoBoneIKSolver : MonoBehaviour
     public float elbowMaxForward = 90f;
     public float elbowMaxBackward = 90f;
 
+    [Header("Chest Avoidance")]
+    public Transform chestTransform;
+    [Tooltip("Extra padding around the chest bounding box")]
+    public float avoidanceMargin = 0.3f;
+    [Tooltip("How deep the arm path must penetrate the expanded box before full avoidance kicks in (smooth blend)")]
+    public float avoidanceSmoothDist = 0.5f;
+
     [Header("CSV Output")]
     public string csvOutputFolder = "ServoCommands";
 
@@ -80,14 +87,37 @@ public class TwoBoneIKSolver : MonoBehaviour
     private ArmState rightArm = new ArmState();
     private ArmState leftArm = new ArmState();
 
+    // Last confirmed collision-free servo angles for each arm (for safety revert)
+    private float[] rightArmSafe = new float[3];
+    private float[] leftArmSafe  = new float[3];
+
     // --- Parallel animation ---
     // Both arms go through 3 instructions (0, 1, 2) in sync.
     // Each instruction animates one servo per arm simultaneously.
     private int currentInstruction = -1; // -1 = idle, 0-2 = which servo pair is animating
     private float phaseT = 1f;
 
+    // Cached chest geometry (computed once in Start)
+    private BoxCollider chestBox;
+    private Vector3 chestCenter;
+    private Vector3 chestHalfSize; // world-space, without margin
+
+    // CSV move counter — reset each Play session, incremented per safe pose
+    private int _moveCount = 0;
+    private bool _lastSolveRight = false;
+    private bool _lastSolveLeft  = false;
+
     void Start()
     {
+        if (chestTransform != null)
+        {
+            chestBox = chestTransform.GetComponent<BoxCollider>();
+            chestHalfSize = chestBox != null
+                ? Vector3.Scale(chestBox.size * 0.5f, chestTransform.lossyScale)
+                : Vector3.Scale(Vector3.one * 0.5f, chestTransform.lossyScale);
+            chestCenter = chestTransform.position + (chestBox != null ? chestBox.center : Vector3.zero);
+        }
+
         SetVisualScale(rightUpperArmVisual, upperArmLength);
         SetVisualScale(rightForearmVisual, forearmLength);
         SetVisualScale(leftUpperArmVisual, upperArmLength);
@@ -97,7 +127,8 @@ public class TwoBoneIKSolver : MonoBehaviour
         if (rightTarget != null)
         {
             float p, r, e;
-            SolveIK(transform.position, rightTarget.position, out p, out r, out e);
+            Vector3 effR = ComputeEffectiveTarget(transform.position, rightTarget.position, true);
+            SolveIK(transform.position, effR, out p, out r, out e);
             rightArm.servoStart[0] = p; rightArm.servoGoal[0] = p; rightArm.servoCurrent[0] = p;
             rightArm.servoStart[1] = r; rightArm.servoGoal[1] = r; rightArm.servoCurrent[1] = r;
             rightArm.servoStart[2] = e; rightArm.servoGoal[2] = e; rightArm.servoCurrent[2] = e;
@@ -111,7 +142,8 @@ public class TwoBoneIKSolver : MonoBehaviour
         if (leftTarget != null && leftShoulderPivot != null)
         {
             float p, r, e;
-            SolveIK(leftShoulderPivot.position, leftTarget.position, out p, out r, out e);
+            Vector3 effL = ComputeEffectiveTarget(leftShoulderPivot.position, leftTarget.position, false);
+            SolveIK(leftShoulderPivot.position, effL, out p, out r, out e);
             leftArm.servoStart[0] = p; leftArm.servoGoal[0] = p; leftArm.servoCurrent[0] = p;
             leftArm.servoStart[1] = r; leftArm.servoGoal[1] = r; leftArm.servoCurrent[1] = r;
             leftArm.servoStart[2] = e; leftArm.servoGoal[2] = e; leftArm.servoCurrent[2] = e;
@@ -120,6 +152,23 @@ public class TwoBoneIKSolver : MonoBehaviour
             ApplyPose(leftShoulderPivot, leftElbowPivot, leftUpperArmVisual, leftForearmVisual,
                       p, r, e);
         }
+
+        // Seed safe poses from initial state
+        System.Array.Copy(rightArm.servoCurrent, rightArmSafe, 3);
+        System.Array.Copy(leftArm.servoCurrent,  leftArmSafe,  3);
+
+        // Clear CSV and write headers fresh at session start
+        string folderPath = Path.Combine(Application.dataPath, "..", csvOutputFolder);
+        if (!Directory.Exists(folderPath))
+            Directory.CreateDirectory(folderPath);
+        using (StreamWriter w = new StreamWriter(
+            new System.IO.FileStream(Path.Combine(folderPath, "servo_commands.csv"),
+                System.IO.FileMode.Create, System.IO.FileAccess.Write, System.IO.FileShare.ReadWrite)))
+        {
+            w.WriteLine("# R1/L1=shoulder_pitch  R2/L2=shoulder_roll  R3/L3=elbow_bend");
+            w.WriteLine("instruction_number,servo_id,target_angle_degrees,speed_percent");
+        }
+        _moveCount = 0;
     }
 
     void Update()
@@ -178,6 +227,7 @@ public class TwoBoneIKSolver : MonoBehaviour
                 if (currentInstruction >= 3)
                 {
                     currentInstruction = -1; // idle
+                    RunSafetyCheck();
                 }
                 else
                 {
@@ -193,7 +243,8 @@ public class TwoBoneIKSolver : MonoBehaviour
         if (solveRight)
         {
             float p, r, e;
-            SolveIK(transform.position, rightTarget.position, out p, out r, out e);
+            Vector3 effR = ComputeEffectiveTarget(transform.position, rightTarget.position, true);
+            SolveIK(transform.position, effR, out p, out r, out e);
 
             rightArm.servoStart[0] = rightArm.servoCurrent[0];
             rightArm.servoStart[1] = rightArm.servoCurrent[1];
@@ -218,7 +269,8 @@ public class TwoBoneIKSolver : MonoBehaviour
         if (solveLeft && leftShoulderPivot != null)
         {
             float p, r, e;
-            SolveIK(leftShoulderPivot.position, leftTarget.position, out p, out r, out e);
+            Vector3 effL = ComputeEffectiveTarget(leftShoulderPivot.position, leftTarget.position, false);
+            SolveIK(leftShoulderPivot.position, effL, out p, out r, out e);
 
             leftArm.servoStart[0] = leftArm.servoCurrent[0];
             leftArm.servoStart[1] = leftArm.servoCurrent[1];
@@ -239,10 +291,65 @@ public class TwoBoneIKSolver : MonoBehaviour
             }
         }
 
-        WriteCSV();
-
+        _lastSolveRight = solveRight;
+        _lastSolveLeft  = solveLeft;
         currentInstruction = 0;
         phaseT = 0f;
+    }
+
+    // ================================================================
+    // Safety Check
+    // ================================================================
+
+    // Called after every completed move. Tests actual arm segments against the chest.
+    // If no collision: saves current pose as the new safe baseline and writes CSV.
+    // If collision: reverts both arms to the last safe pose.
+    void RunSafetyCheck()
+    {
+        bool rightCollides = ArmCollidesWithChest(
+            transform.position, rightElbowPivot, rightForearmVisual, rightArm);
+        bool leftCollides = leftShoulderPivot != null && ArmCollidesWithChest(
+            leftShoulderPivot.position, leftElbowPivot, leftForearmVisual, leftArm);
+
+        if (rightCollides || leftCollides)
+        {
+            // Revert to last safe pose
+            System.Array.Copy(rightArmSafe, rightArm.servoCurrent, 3);
+            System.Array.Copy(leftArmSafe,  leftArm.servoCurrent,  3);
+            System.Array.Copy(rightArmSafe, rightArm.servoGoal, 3);
+            System.Array.Copy(leftArmSafe,  leftArm.servoGoal,  3);
+
+            ApplyPose(transform, rightElbowPivot, rightUpperArmVisual, rightForearmVisual,
+                      rightArm.Pitch, rightArm.Roll, rightArm.Elbow);
+            if (leftShoulderPivot != null)
+                ApplyPose(leftShoulderPivot, leftElbowPivot, leftUpperArmVisual, leftForearmVisual,
+                          leftArm.Pitch, leftArm.Roll, leftArm.Elbow);
+
+            Debug.LogWarning("Safety check failed — arm reverted to last safe pose.");
+        }
+        else
+        {
+            // Pose is safe: update baseline and write CSV
+            System.Array.Copy(rightArm.servoCurrent, rightArmSafe, 3);
+            System.Array.Copy(leftArm.servoCurrent,  leftArmSafe,  3);
+            WriteCSV();
+        }
+    }
+
+    // Returns true if either segment of the arm (upper or forearm) intersects the chest.
+    bool ArmCollidesWithChest(Vector3 shoulderPos, Transform elbowPivot,
+                               Transform forearmVis, ArmState arm)
+    {
+        if (chestTransform == null) return false;
+        if (elbowPivot == null || forearmVis == null) return false;
+
+        Vector3 elbowPos = elbowPivot.position;
+        Vector3 handPos  = forearmVis.position + forearmVis.forward * (forearmLength * 0.5f);
+
+        float tMin, depth;
+        if (SegmentIntersectsExpandedChest(shoulderPos, elbowPos, out tMin, out depth)) return true;
+        if (SegmentIntersectsExpandedChest(elbowPos,    handPos,  out tMin, out depth)) return true;
+        return false;
     }
 
     // ================================================================
@@ -251,29 +358,30 @@ public class TwoBoneIKSolver : MonoBehaviour
 
     void WriteCSV()
     {
-        string folderPath = Path.Combine(Application.dataPath, "..", csvOutputFolder);
-        if (!Directory.Exists(folderPath))
-            Directory.CreateDirectory(folderPath);
-
-        string filePath = Path.Combine(folderPath, "servo_commands.csv");
+        string filePath = Path.Combine(Application.dataPath, "..", csvOutputFolder, "servo_commands.csv");
         string speed = servoSpeed.ToString("F0");
 
         string[] rightNames = { "R1", "R2", "R3" };
-        string[] leftNames = { "L1", "L2", "L3" };
+        string[] leftNames  = { "L1", "L2", "L3" };
 
-        using (StreamWriter writer = new StreamWriter(filePath, false))
+        using (StreamWriter writer = new StreamWriter(
+            new System.IO.FileStream(filePath, System.IO.FileMode.Append,
+                System.IO.FileAccess.Write, System.IO.FileShare.ReadWrite)))
         {
             for (int i = 0; i < 3; i++)
             {
-                int instruction = i + 1;
-                writer.WriteLine(instruction + "," + rightNames[i] + "," +
-                                 rightArm.servoGoal[i].ToString("F2") + "," + speed);
-                writer.WriteLine(instruction + "," + leftNames[i] + "," +
-                                 leftArm.servoGoal[i].ToString("F2") + "," + speed);
+                int instruction = _moveCount * 3 + i + 1;
+                if (_lastSolveRight)
+                    writer.WriteLine(instruction + "," + rightNames[i] + "," +
+                                     rightArm.servoGoal[i].ToString("F2") + "," + speed);
+                if (_lastSolveLeft)
+                    writer.WriteLine(instruction + "," + leftNames[i] + "," +
+                                     leftArm.servoGoal[i].ToString("F2") + "," + speed);
             }
         }
 
-        Debug.Log("Servo commands written to: " + filePath);
+        _moveCount++;
+        Debug.Log($"Move {_moveCount} written to CSV");
     }
 
     // ================================================================
@@ -292,6 +400,84 @@ public class TwoBoneIKSolver : MonoBehaviour
         while (diff > 180f) diff -= 360f;
         while (diff < -180f) diff += 360f;
         return start + diff;
+    }
+
+    // ================================================================
+    // Chest Avoidance
+    // ================================================================
+
+    // Parametric slab test: does the segment a→b pass through the expanded chest AABB?
+    // Returns true if it does, plus tMin (first contact fraction) and penetrationDepth.
+    bool SegmentIntersectsExpandedChest(Vector3 a, Vector3 b,
+                                        out float tMin, out float penetrationDepth)
+    {
+        tMin = 0f;
+        penetrationDepth = 0f;
+
+        if (chestTransform == null) return false;
+
+        Vector3 halfSize = chestHalfSize + Vector3.one * avoidanceMargin;
+        Vector3 center = chestCenter;
+
+        Vector3 dir = b - a;
+        float tEnter = 0f;
+        float tExit  = 1f;
+
+        for (int axis = 0; axis < 3; axis++)
+        {
+            float d = dir[axis];
+            float o = a[axis] - center[axis];
+            float h = halfSize[axis];
+
+            if (Mathf.Abs(d) < 1e-6f)
+            {
+                // Parallel to this slab — if outside, no intersection
+                if (Mathf.Abs(o) > h) return false;
+            }
+            else
+            {
+                float t1 = (-h - o) / d;
+                float t2 = ( h - o) / d;
+                if (t1 > t2) { float tmp = t1; t1 = t2; t2 = tmp; }
+                tEnter = Mathf.Max(tEnter, t1);
+                tExit  = Mathf.Min(tExit,  t2);
+                if (tEnter > tExit) return false;
+            }
+        }
+
+        if (tExit < 0f || tEnter > 1f) return false;
+
+        tMin = tEnter;
+        penetrationDepth = (tExit - Mathf.Max(tEnter, 0f)) * dir.magnitude;
+        return true;
+    }
+
+    // Returns a chest-safe target for SolveIK. If the shoulder→rawTarget segment
+    // doesn't hit the chest, returns rawTarget unchanged.
+    Vector3 ComputeEffectiveTarget(Vector3 shoulderPos, Vector3 rawTarget, bool isRightArm)
+    {
+        float tMin, penetrationDepth;
+        if (!SegmentIntersectsExpandedChest(shoulderPos, rawTarget, out tMin, out penetrationDepth))
+            return rawTarget;
+
+        // Natural outward side: right arm → +X, left arm → -X
+        Vector3 bypassDir = isRightArm ? Vector3.right : Vector3.left;
+
+        // Place waypoint beside the chest at mid-travel height
+        float waypointX = chestCenter.x + bypassDir.x * (chestHalfSize.x + avoidanceMargin + 0.3f);
+        float waypointY = Mathf.Lerp(shoulderPos.y, rawTarget.y, 0.5f);
+        float waypointZ = Mathf.Lerp(shoulderPos.z, rawTarget.z, 0.5f);
+        Vector3 waypoint = new Vector3(waypointX, waypointY, waypointZ);
+
+        // Clamp waypoint to arm reach so SolveIK never gets an impossible target
+        float maxReach = upperArmLength + forearmLength - 0.05f;
+        Vector3 toWaypoint = waypoint - shoulderPos;
+        if (toWaypoint.magnitude > maxReach)
+            waypoint = shoulderPos + toWaypoint.normalized * maxReach;
+
+        // Smooth blend: zero deflection at edge, full deflection when deeply inside
+        float blendWeight = Mathf.Clamp01(penetrationDepth / avoidanceSmoothDist);
+        return Vector3.Lerp(rawTarget, waypoint, blendWeight);
     }
 
     // ================================================================

@@ -15,6 +15,9 @@ public class IKTargetController : MonoBehaviour
     [Header("Movement")]
     public float moveSpeed = 3f;
 
+    [Header("Chest Collision")]
+    public Transform chestTransform;
+
     [Header("Visual Feedback")]
     public Color idleColor = Color.red;
     public Color selectedColor = Color.yellow;
@@ -22,6 +25,9 @@ public class IKTargetController : MonoBehaviour
     private bool isSelected = false;
     private Renderer rend;
     private Camera mainCam;
+    private BoxCollider chestBox;
+    private Vector3 chestBoxCenter;
+    private Vector3 chestBoxHalfSize;
 
     void Start()
     {
@@ -29,6 +35,16 @@ public class IKTargetController : MonoBehaviour
         rend = GetComponent<Renderer>();
         if (rend != null)
             rend.material.color = idleColor;
+
+        if (chestTransform != null)
+        {
+            chestBox = chestTransform.GetComponent<BoxCollider>();
+            chestBoxHalfSize = chestBox != null
+                ? Vector3.Scale(chestBox.size * 0.5f, chestTransform.lossyScale)
+                : Vector3.Scale(Vector3.one * 0.5f, chestTransform.lossyScale);
+            chestBoxHalfSize += Vector3.one * 0.15f;
+            chestBoxCenter = chestTransform.position + (chestBox != null ? chestBox.center : Vector3.zero);
+        }
     }
 
     void Update()
@@ -90,8 +106,34 @@ public class IKTargetController : MonoBehaviour
             if (kb.eKey.isPressed) move += Vector3.up;
             if (kb.qKey.isPressed) move -= Vector3.up;
 
-            transform.position += move.normalized * moveSpeed * Time.deltaTime;
+            Vector3 newPos = transform.position + move.normalized * moveSpeed * Time.deltaTime;
+            transform.position = ClampOutsideChest(newPos);
         }
+    }
+
+    Vector3 ClampOutsideChest(Vector3 desiredPos)
+    {
+        if (chestTransform == null) return desiredPos;
+
+        Vector3 delta = desiredPos - chestBoxCenter;
+        float ox = chestBoxHalfSize.x - Mathf.Abs(delta.x);
+        float oy = chestBoxHalfSize.y - Mathf.Abs(delta.y);
+        float oz = chestBoxHalfSize.z - Mathf.Abs(delta.z);
+
+        if (ox > 0 && oy > 0 && oz > 0)
+        {
+            // Push out along the axis with least penetration
+            Vector3 clamped = desiredPos;
+            if (ox <= oy && ox <= oz)
+                clamped.x = chestBoxCenter.x + Mathf.Sign(delta.x) * chestBoxHalfSize.x;
+            else if (oy <= ox && oy <= oz)
+                clamped.y = chestBoxCenter.y + Mathf.Sign(delta.y) * chestBoxHalfSize.y;
+            else
+                clamped.z = chestBoxCenter.z + Mathf.Sign(delta.z) * chestBoxHalfSize.z;
+            return clamped;
+        }
+
+        return desiredPos;
     }
 
     void SetSelected(bool selected)
