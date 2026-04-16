@@ -808,6 +808,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::IKTargetController
   moveSpeed: 3
+  chestTransform: {fileID: 2112871728}
   idleColor: {r: 1, g: 0, b: 0, a: 1}
   selectedColor: {r: 1, g: 0.92156863, b: 0.015686275, a: 1}
 --- !u!1 &756122861
@@ -967,6 +968,9 @@ MonoBehaviour:
   moveThreshold: 0.05
   elbowMaxForward: 90
   elbowMaxBackward: 90
+  chestTransform: {fileID: 2112871728}
+  avoidanceMargin: 0.3
+  avoidanceSmoothDist: 0.5
   csvOutputFolder: ServoCommands
 --- !u!4 &1168465727
 Transform:
@@ -1402,7 +1406,7 @@ Transform:
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: -0, z: 0}
-  m_LocalScale: {x: 2, y: 5, z: 2}
+  m_LocalScale: {x: 2, y: 5, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}
@@ -1547,6 +1551,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::IKTargetController
   moveSpeed: 3
+  chestTransform: {fileID: 2112871728}
   idleColor: {r: 1, g: 0, b: 0, a: 1}
   selectedColor: {r: 1, g: 0.92156863, b: 0.015686275, a: 1}
 --- !u!1660057539 &9223372036854775807
