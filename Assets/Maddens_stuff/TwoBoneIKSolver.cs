@@ -102,11 +102,6 @@ public class TwoBoneIKSolver : MonoBehaviour
     private Vector3 chestCenter;
     private Vector3 chestHalfSize; // world-space, without margin
 
-    // CSV move counter — reset each Play session, incremented per safe pose
-    private int _moveCount = 0;
-    private bool _lastSolveRight = false;
-    private bool _lastSolveLeft  = false;
-
     void Start()
     {
         if (chestTransform != null)
@@ -156,19 +151,6 @@ public class TwoBoneIKSolver : MonoBehaviour
         // Seed safe poses from initial state
         System.Array.Copy(rightArm.servoCurrent, rightArmSafe, 3);
         System.Array.Copy(leftArm.servoCurrent,  leftArmSafe,  3);
-
-        // Clear CSV and write headers fresh at session start
-        string folderPath = Path.Combine(Application.dataPath, "..", csvOutputFolder);
-        if (!Directory.Exists(folderPath))
-            Directory.CreateDirectory(folderPath);
-        using (StreamWriter w = new StreamWriter(
-            new System.IO.FileStream(Path.Combine(folderPath, "servo_commands.csv"),
-                System.IO.FileMode.Create, System.IO.FileAccess.Write, System.IO.FileShare.ReadWrite)))
-        {
-            w.WriteLine("# R1/L1=shoulder_pitch  R2/L2=shoulder_roll  R3/L3=elbow_bend");
-            w.WriteLine("instruction_number,servo_id,target_angle_degrees,speed_percent");
-        }
-        _moveCount = 0;
     }
 
     void Update()
@@ -291,8 +273,6 @@ public class TwoBoneIKSolver : MonoBehaviour
             }
         }
 
-        _lastSolveRight = solveRight;
-        _lastSolveLeft  = solveLeft;
         currentInstruction = 0;
         phaseT = 0f;
     }
@@ -358,30 +338,29 @@ public class TwoBoneIKSolver : MonoBehaviour
 
     void WriteCSV()
     {
-        string filePath = Path.Combine(Application.dataPath, "..", csvOutputFolder, "servo_commands.csv");
+        string folderPath = Path.Combine(Application.dataPath, "..", csvOutputFolder);
+        if (!Directory.Exists(folderPath))
+            Directory.CreateDirectory(folderPath);
+
+        string filePath = Path.Combine(folderPath, "servo_commands.csv");
         string speed = servoSpeed.ToString("F0");
 
         string[] rightNames = { "R1", "R2", "R3" };
         string[] leftNames  = { "L1", "L2", "L3" };
 
-        using (StreamWriter writer = new StreamWriter(
-            new System.IO.FileStream(filePath, System.IO.FileMode.Append,
-                System.IO.FileAccess.Write, System.IO.FileShare.ReadWrite)))
+        using (StreamWriter writer = new StreamWriter(filePath, false))
         {
             for (int i = 0; i < 3; i++)
             {
-                int instruction = _moveCount * 3 + i + 1;
-                if (_lastSolveRight)
-                    writer.WriteLine(instruction + "," + rightNames[i] + "," +
-                                     rightArm.servoGoal[i].ToString("F2") + "," + speed);
-                if (_lastSolveLeft)
-                    writer.WriteLine(instruction + "," + leftNames[i] + "," +
-                                     leftArm.servoGoal[i].ToString("F2") + "," + speed);
+                int instruction = i + 1;
+                writer.WriteLine(instruction + "," + rightNames[i] + "," +
+                                 rightArm.servoGoal[i].ToString("F2") + "," + speed);
+                writer.WriteLine(instruction + "," + leftNames[i] + "," +
+                                 leftArm.servoGoal[i].ToString("F2") + "," + speed);
             }
         }
 
-        _moveCount++;
-        Debug.Log($"Move {_moveCount} written to CSV");
+        Debug.Log("Servo commands written to: " + filePath);
     }
 
     // ================================================================
